@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+
+# Build artifacts
+frontend/dist/
+*.egg-info/
+
+# Data files (large)
+data/raw/*.h5
+data/raw/*.hdf5
+data/processed/*.npz
+
+# Model checkpoints (large)
+model/checkpoints/*.pt
+model/checkpoints/*.pth
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
