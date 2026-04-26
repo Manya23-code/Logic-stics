@@ -33,6 +33,7 @@ def main():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
         print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
     from model.trainer import train_model
+    
     if not os.path.exists("model/checkpoints/best_model.pt"):
         model, polys, history = train_model(
             adj_matrix=adj,
@@ -55,13 +56,21 @@ def main():
 
     # Step 4: Launch server
     print("\n[4/4] Launching FastAPI server …")
-    print("  → Backend:  http://localhost:8000")
-    print("  → API Docs: http://localhost:8000/docs")
+    
+    import uvicorn
+    # Removed the buggy 'import os' from here!
+    
+    # CLOUD PORT LOGIC
+    # Render khud ek random PORT dega. Agar aap local laptop par ho, toh 8000 chalega.
+    PORT = int(os.environ.get("PORT", 8000))
+    HOST = "0.0.0.0"
+
+    print(f"  → Backend:  http://localhost:{PORT}")
+    print(f"  → API Docs: http://localhost:{PORT}/docs")
     print("  → Frontend: Run 'cd frontend && npm run dev' in another terminal\n")
 
-    import uvicorn
-    uvicorn.run("backend.main:app", host="0.0.0.0", port=8000, reload=False)
-
+    # ✅ Uvicorn ko ab dynamic PORT pass kiya gaya hai
+    uvicorn.run("backend.main:app", host=HOST, port=PORT, reload=False)
 
 if __name__ == "__main__":
     main()

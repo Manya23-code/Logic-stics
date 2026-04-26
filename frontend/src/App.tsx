@@ -31,16 +31,27 @@ export default function App() {
             <div className="logo-subtitle">Predictive Digital Twin</div>
           </div>
         </div>
+        
         <div className="header-status">
+          {/* ✅ Live TomTom Speed Badge */}
           <div className="status-badge">
-            <span className={`status-dot ${connected ? 'live' : 'danger'}`} />
-            {connected ? 'Live' : 'Reconnecting…'}
+            📍 Live DU Speed: {state?.live_anchor_speed ? Math.round(state.live_anchor_speed) : '--'} km/h
           </div>
+          
+          {/* ✅ DYNAMIC STATUS: Changes based on 1x vs Fast-Forward */}
+          <div className={`status-badge ${state?.is_live_synced === false ? 'simulating-glow' : ''}`}>
+            <span className={`status-dot ${connected ? (state?.is_live_synced !== false ? 'live' : 'warning') : 'danger'}`} />
+            {connected 
+              ? (state?.is_live_synced !== false ? 'Live Sync' : `Simulating at ${state?.speed_multiplier || 1}x`) 
+              : 'Reconnecting…'}
+          </div>
+
           <div className="status-badge">
             🧠 ASTGCN Active
           </div>
+
           <div className="status-badge">
-            📡 {state?.bottleneck_nodes?.length || 0} Bottlenecks Detected
+            📡 {state?.bottleneck_nodes?.length || 0} Bottlenecks Predicted
           </div>
         </div>
       </header>
@@ -53,8 +64,9 @@ export default function App() {
           onDisruptionModeToggle={() => setDisruptionMode(m => !m)}
           disruptionMode={disruptionMode}
           step={state?.step || 0}
-          timeOfDay={traffic?.time_of_day || 0}
-          dayOfWeek={traffic?.day_of_week || 0}
+          /* ✅ SYNCED TIME: Ab ye real clock se match karega */
+          timeOfDay={state?.traffic?.time_of_day ?? traffic?.time_of_day ?? 0}
+          dayOfWeek={state?.traffic?.day_of_week ?? traffic?.day_of_week ?? 0}
         />
       </aside>
 
@@ -73,7 +85,8 @@ export default function App() {
         <AlertFeed
           events={events}
           bottleneckCount={state?.bottleneck_nodes?.length || 0}
-          meanSpeed={state?.prediction?.mean_predicted_speed || (traffic?.speeds ? traffic.speeds.reduce((a, b) => a + b, 0) / traffic.speeds.length : 50)}
+          /* ✅ Uses Real-Time TomTom speed as primary KPI */
+          meanSpeed={state?.live_anchor_speed || (traffic?.speeds ? traffic.speeds.reduce((a, b) => a + b, 0) / traffic.speeds.length : 50)}
         />
       </aside>
 
