@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/live';
-
+const API_BASE = import.meta.env.VITE_API_URL || 'https://logic-stics.onrender.com';
+const WS_URL = import.meta.env.VITE_WS_URL || 'wss://https://logic-stics.onrender.com/ws/live';
 export interface SimState {
   step: number;
   traffic: {
