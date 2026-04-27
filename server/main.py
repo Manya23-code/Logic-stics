@@ -2,6 +2,8 @@
 main.py — FastAPI backend for Logic-stics Digital Twin.
 """
 import asyncio, os, sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.join(os.getcwd(), "server"))
 
 # Path adjustment to find modules regardless of folder name
 current_dir = os.path.dirname(os.path.abspath(__file__))
