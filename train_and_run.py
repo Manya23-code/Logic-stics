@@ -21,7 +21,7 @@ def main():
     
     # 🚨 SABSE BADA FIX: 'server.app' ki jagah 'backend.app' use kiya gaya hai 🚨
     # Agar aapki file ka naam main.py hai, toh isko 'from backend.main import app' kar dijiyega
-    from backend.app import app
+    from server.app import app
 
     if __name__ == "__main__":
         port = int(os.environ.get("PORT", 8000))
