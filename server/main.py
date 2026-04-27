@@ -17,11 +17,12 @@ from pydantic import BaseModel
 from typing import Optional
 
 # 🚨 DHYAN DIJIYE: Yahan humne folder name ki dependency hata di hai
+from server.simulation_engine import SimulationEngine
 try:
-    from simulation_engine import SimulationEngine
-except ImportError:
     from server.simulation_engine import SimulationEngine
-
+except ImportError:
+    from simulation_engine import SimulationEngine
+    
 app = FastAPI(title="Logic-stics", description="Predictive Logistics Digital Twin API", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
