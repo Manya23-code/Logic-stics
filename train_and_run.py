@@ -54,23 +54,12 @@ def main():
     else:
         print("  ✓ Checkpoint exists, skipping training")
 
-    # Step 4: Launch server
-    print("\n[4/4] Launching FastAPI server …")
-    
+    # Step 4: Launch backend server
+    print("\n[4/4] Launching backend server …")
+    import os
     import uvicorn
-    # Removed the buggy 'import os' from here!
-    
-    # CLOUD PORT LOGIC
-    # Render khud ek random PORT dega. Agar aap local laptop par ho, toh 8000 chalega.
-    PORT = int(os.environ.get("PORT", 8000))
-    HOST = "0.0.0.0"
+    from server.app import app
 
-    print(f"  → Backend:  http://localhost:{PORT}")
-    print(f"  → API Docs: http://localhost:{PORT}/docs")
-    print("  → Frontend: Run 'cd frontend && npm run dev' in another terminal\n")
-
-    # ✅ Uvicorn ko ab dynamic PORT pass kiya gaya hai
-    uvicorn.run("backend.main:app", host=HOST, port=PORT, reload=False)
-
-if __name__ == "__main__":
-    main()
+    if __name__ == "__main__":
+        port = int(os.environ.get("PORT", 8000))
+        uvicorn.run(app, host="0.0.0.0", port=port)
