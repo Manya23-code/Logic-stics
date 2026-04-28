@@ -1,7 +1,6 @@
 """
 simulation_engine.py — Orchestrates the full digital twin simulation loop.
-HYBRID VERSION: 1x = Live Sync, >1x = Predictive Fast-Forward.
-FIXED: Added safety check for websocket client removal to prevent crash.
+UPGRADED: Real-time Sync, Time-Travel (Past/Future), and Fixed Disruption Injection.
 """
 import time, threading, json, numpy as np, asyncio, httpx, datetime
 import sys, os
@@ -29,11 +28,10 @@ class SimulationEngine:
         print("[SimEngine] Building graph ...")
         self.adj, self.node_features = build_synthetic_grid(n, n, out_dir="data/raw")
 
-        # 2) Generate synthetic training data & train if needed
+        # 2) Generate synthetic training data
         if not os.path.exists("data/processed/train.npz"):
             print("[SimEngine] Generating synthetic traffic data ...")
-            generate_synthetic_traffic(self.num_nodes, num_steps=12 * 288,
-                                       out_dir="data/processed")
+            generate_synthetic_traffic(self.num_nodes, num_steps=12 * 288, out_dir="data/processed")
 
         # 3) Load predictor
         print("[SimEngine] Loading predictor ...")
@@ -42,30 +40,24 @@ class SimulationEngine:
             adj_path="data/raw/graph_data.pkl",
             scaler_path="data/processed/scaler.pkl")
 
-        # 4) Traffic simulator
+        # 4) Components
         self.traffic_sim = TrafficSimulator(self.num_nodes, self.adj)
-
-        # 5) Router
         self.router = DynamicRouter(self.adj, self.node_features)
-
-        # 6) Fleet
         self.fleet = FleetManager(num_vehicles, self.num_nodes, self.router)
 
         # State
         self.running = False
-        
-        # HYBRID TIME ENGINE VARIABLES
-        self.speed_multiplier = 1   
         self.tick_interval = 2.0    
+        self.step_count = 0
+        self.websocket_clients: list = []
+        
+        # ✅ TIME TRAVEL VARIABLES
+        self.time_offset_hours = 0  # Hours relative to now
         self.current_sim_time = datetime.datetime.now()
         self.is_live_synced = True  
         
         self.current_prediction = None
         self.event_log: list[dict] = []
-        self.websocket_clients: list = []
-        self.step_count = 0
-        
-        # Real-time data state
         self.last_real_speed = 25.0 
 
         # Warm up
@@ -73,62 +65,87 @@ class SimulationEngine:
             self.traffic_sim.tick()
 
     async def _fetch_tomtom_speed(self):
-        """Fetch real-time speed from TomTom for North Campus."""
         url = "https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json"
-        params = {
-            "point": "28.6892,77.2106",
-            "unit": "KMPH",
-            "key": TOMTOM_KEY
-        }
+        params = {"point": "28.6892,77.2106", "unit": "KMPH", "key": TOMTOM_KEY}
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(url, params=params, timeout=5.0)
                 if response.status_code == 200:
                     data = response.json()
                     speed = data['flowSegmentData']['currentSpeed']
-                    jitter = np.random.uniform(-0.4, 0.4)
-                    return float(speed) + jitter
+                    return float(speed) + np.random.uniform(-0.5, 0.5)
         except Exception as e:
             print(f"[TomTom] Error: {e}")
         return self.last_real_speed
 
-    def set_speed(self, multiplier: int):
-        self.speed_multiplier = max(1, min(multiplier, 100))
-        if self.speed_multiplier == 1:
-            self.is_live_synced = True
-            self.current_sim_time = datetime.datetime.now() 
-        else:
-            self.is_live_synced = False
+    # ✅ UPDATED: TIME TRAVEL CONTROL
+    def set_time_offset(self, hours: int):
+        """Sets the simulation to a specific point in time (Past or Future)."""
+        self.time_offset_hours = hours
+        self.is_live_synced = (hours == 0)
+        # Re-sync clock immediately
+        self.current_sim_time = datetime.datetime.now() + datetime.timedelta(hours=hours)
+        print(f"[SimEngine] Time Travel initiated: {hours}h from now. Sim Time: {self.current_sim_time}")
 
-    def inject_disruption(self, node_id: int, severity: float = 0.2,
-                          radius: int = 3, duration: int = 24,
-                          event_type: str = "accident") -> dict:
-        node_id = node_id % self.num_nodes
-        d = self.traffic_sim.inject_disruption(node_id, severity, radius, duration, event_type)
-        event = {"type": "disruption_injected", "node_id": node_id,
-                 "severity": severity, "event_type": event_type,
-                 "step": self.step_count}
+    # ✅ FIXED: DISRUPTION INJECTION
+    async def inject_disruption(self, node_id: int, severity: float = 0.8,
+                                 radius: int = 3, duration: int = 24,
+                                 event_type: str = "accident") -> dict:
+        node_id = int(node_id) % self.num_nodes
+        self.traffic_sim.inject_disruption(node_id, severity, radius, duration, event_type)
+        
+        event = {
+            "type": "disruption_injected", 
+            "node_id": node_id,
+            "severity": severity, 
+            "event_type": event_type,
+            "step": self.step_count,
+            "msg": f"Urgent: {event_type.capitalize()} at Node {node_id}!"
+        }
         self.event_log.append(event)
+        
+        # Immediate Broadcast so UI reacts instantly
+        await self._broadcast({"events": [event], "alert": True})
         return event
 
+    async def _broadcast(self, data_dict: dict):
+        """Helper to send data to all UI clients."""
+        msg = json.dumps(data_dict, default=str)
+        dead = []
+        for ws in self.websocket_clients:
+            try:
+                await ws.send_text(msg)
+            except:
+                dead.append(ws)
+        for ws in dead:
+            if ws in self.websocket_clients:
+                self.websocket_clients.remove(ws)
+
     async def _run_tick(self) -> dict:
-        """Execute one simulation tick with Hybrid Time."""
+        # 1) SYNC TIME
         if self.is_live_synced:
             self.current_sim_time = datetime.datetime.now()
         else:
-            delta = datetime.timedelta(seconds=self.tick_interval * self.speed_multiplier)
-            self.current_sim_time += delta
+            # In historical mode, we advance the virtual clock by tick_interval every real tick
+            self.current_sim_time += datetime.timedelta(seconds=self.tick_interval)
 
         time_decimal = self.current_sim_time.hour + (self.current_sim_time.minute / 60.0)
-        day_of_week = self.current_sim_time.weekday()
-
-        if self.step_count % 5 == 0:
+        
+        # 2) FETCH TOMTOM (Only if Live)
+        if self.is_live_synced and self.step_count % 5 == 0:
             self.last_real_speed = await self._fetch_tomtom_speed()
 
+        # 3) TRAFFIC & FLEET
         speeds = self.traffic_sim.tick()
+        # In historical mode, we simulate speed based on time of day if TomTom isn't synced
+        if not self.is_live_synced:
+            base = 35.0 - (5.0 * np.sin(time_decimal * np.pi / 12)) # Simple rush hour math
+            self.last_real_speed = base + np.random.uniform(-2, 2)
+        
         speeds[0] = self.last_real_speed 
         self.step_count += 1
 
+        # 4) PREDICTION
         bottleneck_nodes = []
         if self.step_count % 3 == 0:
             history = self.traffic_sim.get_history_tensor(lookback=12)
@@ -138,64 +155,30 @@ class SimulationEngine:
 
         self.router.update_speeds(speeds)
         fleet_events = self.fleet.tick(speeds, bottleneck_nodes)
-        self.event_log.extend(fleet_events)
 
-        state = {
+        return {
             "step": self.step_count,
             "traffic": {
                 "speeds": speeds.tolist(),
                 "time_of_day": time_decimal,
-                "day_of_week": day_of_week,
                 "current_speed": self.last_real_speed
             },
             "prediction": self.current_prediction,
             "fleet": self.fleet.get_state(),
-            "events": fleet_events,
-            "bottleneck_nodes": bottleneck_nodes,
-            "live_anchor_speed": self.last_real_speed,
+            "events": fleet_events + self.event_log[-2:], # Show latest events
             "is_live_synced": self.is_live_synced,
-            "speed_multiplier": self.speed_multiplier
+            "time_offset": self.time_offset_hours
         }
-        return state
 
     async def run_loop(self):
-        """Main simulation loop with safe WebSocket handling."""
         self.running = True
         while self.running:
             try:
                 state = await self._run_tick()
-                msg = json.dumps(state, default=str)
-                
-                dead = []
-                # Attempt to send message to all connected clients
-                for ws in self.websocket_clients:
-                    try:
-                        await ws.send_text(msg)
-                    except Exception:
-                        dead.append(ws)
-                
-                # SAFE REMOVAL: Fixed the 'list.remove(x): x not in list' error
-                for ws in dead:
-                    if ws in self.websocket_clients:
-                        self.websocket_clients.remove(ws)
-
+                await self._broadcast(state)
             except Exception as e:
                 print(f"[SimLoop Error] {e}")
-            
             await asyncio.sleep(self.tick_interval)
 
     def stop(self):
         self.running = False
-
-    def get_snapshot(self) -> dict:
-        now = datetime.datetime.now()
-        return {
-            "step": self.step_count,
-            "traffic": {
-                "time_of_day": now.hour + (now.minute / 60.0),
-                "day_of_week": now.weekday()
-            },
-            "live_anchor_speed": self.last_real_speed,
-            "num_nodes": self.num_nodes,
-            "grid_size": 15
-        }

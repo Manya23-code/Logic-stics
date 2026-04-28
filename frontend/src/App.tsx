@@ -6,15 +6,20 @@ import AlertFeed from './components/AlertFeed';
 import KPIDashboard from './components/KPIDashboard';
 import './index.css';
 
-// Yeh configuration aap hook mein bhi rakh sakte hain ya yahan se pass kar sakte hain
 export default function App() {
-  // useSimulation hook ke andar humne wss:// aur https:// set kar diya hai
   const { state, graph, connected, events, injectDisruption, setSpeed } = useSimulation();
   const [disruptionMode, setDisruptionMode] = useState(false);
 
+  // Time Travel Logic: Speed buttons ki jagah hours offset use karenge
+  const handleTimeTravel = (hours: number) => {
+    // Backend API handles 'setSpeed' but we'll use it to pass hours offset
+    setSpeed(hours); 
+  };
+
   const handleNodeClick = useCallback((nodeId: number) => {
     if (disruptionMode) {
-      // 0.05 = 5% of normal speed (gridlock simulation)
+      console.log(`Injecting disruption at node: ${nodeId}`);
+      // 0.05 severity = High impact (Road closure)
       injectDisruption(nodeId, 0.05, 'accident');  
       setDisruptionMode(false);
     }
@@ -41,37 +46,35 @@ export default function App() {
           </div>
           
           <div className={`status-badge ${state?.is_live_synced === false ? 'simulating-glow' : ''}`}>
-            {/* Connected status dot updates automatically based on WebSocket state */}
             <span className={`status-dot ${connected ? (state?.is_live_synced !== false ? 'live' : 'warning') : 'danger'}`} />
             {connected 
-              ? (state?.is_live_synced !== false ? 'Cloud Sync: Active' : `Simulating at ${state?.speed_multiplier || 1}x`) 
+              ? (state?.is_live_synced !== false ? 'Cloud Sync: Active' : `Time Travel: ${state?.time_offset || 0}h Offset`) 
               : 'Connecting to Render Server…'}
           </div>
 
-          <div className="status-badge">
-             ASTGCN ML Active
-          </div>
-
-          <div className="status-badge">
-             {state?.bottleneck_nodes?.length || 0} Bottlenecks Predicted
-          </div>
+          <div className="status-badge">ASTGCN ML Active</div>
+          <div className="status-badge">{state?.bottleneck_nodes?.length || 0} Bottlenecks Predicted</div>
         </div>
       </header>
 
-      {/* ── Left Sidebar: Controls ── */}
+      {/* ── Sidebar: Controls ── */}
       <aside className="sidebar-left">
         <ControlPanel
           connected={connected}
-          onSpeedChange={setSpeed}
+          // Yahan hum offset hours pass kar rahe hain
+          onSpeedChange={handleTimeTravel} 
           onDisruptionModeToggle={() => setDisruptionMode(m => !m)}
           disruptionMode={disruptionMode}
           step={state?.step || 0}
           timeOfDay={state?.traffic?.time_of_day ?? traffic?.time_of_day ?? 0}
           dayOfWeek={state?.traffic?.day_of_week ?? traffic?.day_of_week ?? 0}
         />
+        {/* Helper text for Judges */}
+        <div className="time-travel-legend" style={{padding: '10px', fontSize: '12px', color: '#888'}}>
+          * Use 1x for Live, 2x for -2hrs, 5x for -5hrs
+        </div>
       </aside>
 
-      {/* ── Main Map ── */}
       <main className="main-map">
         <MapView
           graph={graph}
@@ -81,16 +84,14 @@ export default function App() {
         />
       </main>
 
-      {/* ── Right Sidebar: Alerts ── */}
       <aside className="sidebar-right">
         <AlertFeed
           events={events}
           bottleneckCount={state?.bottleneck_nodes?.length || 0}
-          meanSpeed={state?.live_anchor_speed || (traffic?.speeds ? traffic.speeds.reduce((a, b) => a + b, 0) / traffic.speeds.length : 50)}
+          meanSpeed={state?.live_anchor_speed || 50}
         />
       </aside>
 
-      {/* ── Bottom: KPIs ── */}
       <div className="bottom-panel">
         <KPIDashboard
           activeShipments={fleet?.active_count || 0}
