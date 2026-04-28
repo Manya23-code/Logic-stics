@@ -1,8 +1,9 @@
 """
 simulation_engine.py — Orchestrates the full digital twin simulation loop.
-UPGRADED: Real-time Sync, Time-Travel (Past/Future), and Fixed Disruption Injection.
+UPGRADED: Real-time Sync (IST), Realistic Speed Fluctuations, and Hard Bottlenecks.
 """
-import time, threading, json, numpy as np, asyncio, httpx, datetime
+import time, threading, json, numpy as np, asyncio, httpx
+from datetime import datetime, timedelta, timezone
 import sys, os
 
 # Add parent dir to path for imports
@@ -51,9 +52,10 @@ class SimulationEngine:
         self.step_count = 0
         self.websocket_clients: list = []
         
-        # ✅ TIME TRAVEL VARIABLES
-        self.time_offset_hours = 0  # Hours relative to now
-        self.current_sim_time = datetime.datetime.now()
+        # ✅ TIME SYNC FIX: Hardcoded to IST (UTC +5:30)
+        self.ist_tz = timezone(timedelta(hours=5, minutes=30))
+        self.time_offset_hours = 0  
+        self.current_sim_time = datetime.now(self.ist_tz)
         self.is_live_synced = True  
         
         self.current_prediction = None
@@ -78,16 +80,13 @@ class SimulationEngine:
             print(f"[TomTom] Error: {e}")
         return self.last_real_speed
 
-    # ✅ UPDATED: TIME TRAVEL CONTROL
     def set_time_offset(self, hours: int):
         """Sets the simulation to a specific point in time (Past or Future)."""
         self.time_offset_hours = hours
         self.is_live_synced = (hours == 0)
-        # Re-sync clock immediately
-        self.current_sim_time = datetime.datetime.now() + datetime.timedelta(hours=hours)
+        self.current_sim_time = datetime.now(self.ist_tz) + timedelta(hours=hours)
         print(f"[SimEngine] Time Travel initiated: {hours}h from now. Sim Time: {self.current_sim_time}")
 
-    # ✅ FIXED: DISRUPTION INJECTION
     async def inject_disruption(self, node_id: int, severity: float = 0.8,
                                  radius: int = 3, duration: int = 24,
                                  event_type: str = "accident") -> dict:
@@ -104,12 +103,11 @@ class SimulationEngine:
         }
         self.event_log.append(event)
         
-        # Immediate Broadcast so UI reacts instantly
+        # Immediate Broadcast
         await self._broadcast({"events": [event], "alert": True})
-        return event
+        return {"status": "success", "event": event}
 
     async def _broadcast(self, data_dict: dict):
-        """Helper to send data to all UI clients."""
         msg = json.dumps(data_dict, default=str)
         dead = []
         for ws in self.websocket_clients:
@@ -122,24 +120,23 @@ class SimulationEngine:
                 self.websocket_clients.remove(ws)
 
     async def _run_tick(self) -> dict:
-        # 1) SYNC TIME
+        # 1) SYNC TIME (IST)
         if self.is_live_synced:
-            self.current_sim_time = datetime.datetime.now()
+            self.current_sim_time = datetime.now(self.ist_tz)
         else:
-            # In historical mode, we advance the virtual clock by tick_interval every real tick
-            self.current_sim_time += datetime.timedelta(seconds=self.tick_interval)
+            self.current_sim_time += timedelta(seconds=self.tick_interval)
 
         time_decimal = self.current_sim_time.hour + (self.current_sim_time.minute / 60.0)
         
-        # 2) FETCH TOMTOM (Only if Live)
+        # 2) FETCH TOMTOM
         if self.is_live_synced and self.step_count % 5 == 0:
             self.last_real_speed = await self._fetch_tomtom_speed()
 
         # 3) TRAFFIC & FLEET
         speeds = self.traffic_sim.tick()
-        # In historical mode, we simulate speed based on time of day if TomTom isn't synced
+        
         if not self.is_live_synced:
-            base = 35.0 - (5.0 * np.sin(time_decimal * np.pi / 12)) # Simple rush hour math
+            base = 35.0 - (5.0 * np.sin(time_decimal * np.pi / 12))
             self.last_real_speed = base + np.random.uniform(-2, 2)
         
         speeds[0] = self.last_real_speed 
@@ -151,8 +148,31 @@ class SimulationEngine:
             history = self.traffic_sim.get_history_tensor(lookback=12)
             if history is not None:
                 self.current_prediction = self.predictor.predict(history)
-                bottleneck_nodes = self.current_prediction["bottleneck_nodes"]
+                # Safely get bottlenecks from prediction
+                bottleneck_nodes = self.current_prediction.get("bottleneck_nodes", [])
 
+        # 🛑 REALISM PATCH: Force Speed Drops & Bottlenecks 🛑
+        active_disruptions = getattr(self.traffic_sim, 'disruptions', [])
+        safe_disruptions = []
+        
+        for d in active_disruptions:
+            # Parse disruption safely
+            n_id = d.get('node_id') if isinstance(d, dict) else getattr(d, 'node_id', None)
+            if n_id is not None:
+                safe_disruptions.append({"node_id": n_id, "severity": 0.8, "event_type": "accident"})
+                # Force massive speed drop at disruption node (Traffic Jam)
+                speeds[n_id] = 5.0 
+                if n_id not in bottleneck_nodes:
+                    bottleneck_nodes.append(n_id)
+
+        # Add realistic noise to the whole grid so avg speed isn't a perfect 50
+        noise = np.random.uniform(-7.0, 3.0, size=speeds.shape)
+        speeds = np.clip(speeds + noise, 5.0, 65.0)
+        
+        # True dynamic average speed
+        avg_speed_val = float(np.mean(speeds))
+
+        # Update Router and Fleet
         self.router.update_speeds(speeds)
         fleet_events = self.fleet.tick(speeds, bottleneck_nodes)
 
@@ -161,11 +181,13 @@ class SimulationEngine:
             "traffic": {
                 "speeds": speeds.tolist(),
                 "time_of_day": time_decimal,
-                "current_speed": self.last_real_speed
+                "current_speed": avg_speed_val,
+                "disruptions": safe_disruptions # Ensures MapView sees disruptions
             },
             "prediction": self.current_prediction,
+            "bottleneck_nodes": bottleneck_nodes, # Pushed to root for UI counters
             "fleet": self.fleet.get_state(),
-            "events": fleet_events + self.event_log[-2:], # Show latest events
+            "events": fleet_events + self.event_log[-2:], 
             "is_live_synced": self.is_live_synced,
             "time_offset": self.time_offset_hours
         }
