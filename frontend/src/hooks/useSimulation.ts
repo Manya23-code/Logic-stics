@@ -3,7 +3,6 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 const API_BASE = 'https://logic-stics.onrender.com';
 const WS_URL = 'wss://logic-stics.onrender.com/ws/live';
 
-// UPDATED INTERFACE: All new backend fields added
 export interface SimState {
   step: number;
   traffic: {
@@ -11,11 +10,15 @@ export interface SimState {
     time_of_day: number;
     day_of_week?: number;
     current_speed?: number;
+    // MapView error fix karne ke liye disruptions add kiya
+    disruptions?: { node_id: number; severity: number; remaining_steps: number; event_type: string }[];
   };
   prediction: {
     predicted_speeds: number[][];
     bottleneck_nodes: number[];
     bottleneck_severity: Record<string, number>;
+    threshold?: number;
+    mean_predicted_speed?: number;
   } | null;
   fleet: {
     vehicles: Vehicle[];
@@ -27,12 +30,11 @@ export interface SimState {
   };
   events: SimEvent[];
   bottleneck_nodes: number[];
-  
-  // ✅ CRITICAL: New Fields for Time Travel & Sync
+  // Time Sync & Hybrid Engine fields
   live_anchor_speed?: number;
   is_live_synced?: boolean;
-  time_offset?: number; 
   speed_multiplier?: number;
+  time_offset?: number;
 }
 
 export interface Vehicle {
@@ -41,20 +43,30 @@ export interface Vehicle {
   destination: number;
   current_node: number;
   route: number[];
+  route_index?: number;
   status: string;
+  total_time?: number;
+  total_distance?: number;
+  reroute_count?: number;
+  cargo_type?: string;
   progress: number;
 }
 
 export interface SimEvent {
   type: string;
   msg?: string;
+  vehicle_id?: number;   // AlertFeed error fix
+  time_saved?: number;   // AlertFeed error fix
+  new_path?: number[];
   node_id?: number;
+  severity?: number;     // AlertFeed error fix
   event_type?: string;
   step?: number;
+  total_time?: number;   // AlertFeed error fix
 }
 
 export interface GraphData {
-  nodes: { id: number; x: number; y: number }[];
+  nodes: { id: number; x: number; y: number; road_length?: number; speed_limit?: number; lanes?: number; road_class?: number }[];
   edges: { source: number; target: number }[];
   grid_size: number;
 }
@@ -66,21 +78,20 @@ export function useSimulation() {
   const [events, setEvents] = useState<SimEvent[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Fetch graph topology
+  // 1) Fetch Graph Topology once
   useEffect(() => {
     fetch(`${API_BASE}/api/graph`)
       .then(r => r.json())
       .then(data => {
-        console.log("Graph Loaded:", data);
+        console.log("[useSimulation] Graph Data Loaded:", data);
         setGraph(data);
       })
-      .catch(err => console.error("Graph Fetch Error:", err));
+      .catch(err => console.error("[useSimulation] Graph Fetch Error:", err));
   }, []);
 
-  // WebSocket connection
+  // 2) WebSocket connection with Auto-Reconnect
   useEffect(() => {
     const connect = () => {
-      console.log("Connecting to WebSocket...");
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
@@ -90,20 +101,25 @@ export function useSimulation() {
       };
 
       ws.onclose = () => {
-        console.log("WebSocket Disconnected ❌");
+        console.log("WebSocket Disconnected ❌. Reconnecting...");
         setConnected(false);
-        setTimeout(connect, 3000); // Retry
+        setTimeout(connect, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error("WebSocket Error:", err);
+        ws.close();
       };
 
       ws.onmessage = (msg) => {
         try {
-          const data = JSON.parse(msg.data);
+          const data = JSON.parse(msg.data) as SimState;
           setState(data);
           if (data.events && data.events.length > 0) {
             setEvents(prev => [...data.events, ...prev].slice(0, 50));
           }
         } catch (e) {
-          console.error("Data Parse Error:", e);
+          console.error("Parse Error:", e);
         }
       };
     };
@@ -112,7 +128,7 @@ export function useSimulation() {
     return () => wsRef.current?.close();
   }, []);
 
-  // FIXED: Inject Disruption
+  // 3) API Call: Inject Disruption
   const injectDisruption = useCallback(async (nodeId: number, severity = 0.05, eventType = 'accident') => {
     try {
       await fetch(`${API_BASE}/api/disruption`, {
@@ -120,13 +136,12 @@ export function useSimulation() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ node_id: nodeId, severity, radius: 3, duration: 24, event_type: eventType }),
       });
-      console.log(`Disruption Sent to Node ${nodeId}`);
     } catch (err) {
-      console.error("Disruption API Error:", err);
+      console.error("API Error (Disruption):", err);
     }
   }, []);
 
-  // FIXED: Time Travel (using multiplier as offset)
+  // 4) API Call: Set Speed / Time Offset
   const setSpeed = useCallback(async (multiplier: number) => {
     try {
       await fetch(`${API_BASE}/api/speed`, {
@@ -135,7 +150,7 @@ export function useSimulation() {
         body: JSON.stringify({ multiplier }),
       });
     } catch (err) {
-      console.error("Speed API Error:", err);
+      console.error("API Error (Speed):", err);
     }
   }, []);
 
